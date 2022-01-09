@@ -23,7 +23,7 @@ parser.add_argument('--net', default='vgg', help='which network to use as backbo
 # TODO
 parser.add_argument('--resume', action='store_true', help='resume from checkpoint',
                     default=True)
-parser.add_argument('--save_interval', type=int, default=1000, metavar='N',
+parser.add_argument('--save_interval', type=int, default=500, metavar='N',
                     help='how many batches to wait before logging')
 parser.add_argument('--val_interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging')
@@ -43,7 +43,7 @@ parser.add_argument('--threshold', type=float, default=0.95, help='loss weight')
 parser.add_argument('--beta', type=float, default=1.0, help='loss weight')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR', help='learning rate')
 parser.add_argument('--save_check', action='store_true', default=True, help='save checkpoint or not')
-parser.add_argument('--save_model_path', type=str, default='./save_model', help='dir to save model')
+parser.add_argument('--save_model_path', type=str, default='./save_vgg72_model', help='dir to save model')
 parser.add_argument('--lamda', type=float, default=0.1, metavar='LAM',
                     help='value of lamda used in entropy and adentropy')
 parser.add_argument('--patience', type=int, default=20, metavar='S',
@@ -125,20 +125,16 @@ val_label = torch.LongTensor(1).to(device)
 eps = torch.FloatTensor(1).to(device)
 weights = torch.FloatTensor(1).to(device)
 
-source_labeled_image = Variable(source_labeled_image)
-source_labeled_label = Variable(source_labeled_label)
-target_unlabeled_image = Variable(target_unlabeled_image)
-target_unlabeled_image2 = Variable(target_unlabeled_image2)
-target_labeled_image = Variable(target_labeled_image)
-target_labeled_label = Variable(target_labeled_label)
-val_image = Variable(val_image)
-val_label = Variable(val_label)
+source_labeled_image = Variable(source_labeled_image,volatile=True)
+source_labeled_label = Variable(source_labeled_label,volatile=True)
+target_unlabeled_image = Variable(target_unlabeled_image,volatile=True)
+target_unlabeled_image2 = Variable(target_unlabeled_image2,volatile=True)
+target_labeled_image = Variable(target_labeled_image,volatile=True)
+target_labeled_label = Variable(target_labeled_label,volatile=True)
+val_image = Variable(val_image,volatile=True)
+val_label = Variable(val_label,volatile=True)
 
 acc_list = []
-loss_comb_list = []
-loss_s_list = []
-loss_u_list = []
-loss_t_list = []
 loss_val_list = []
 
 
@@ -242,10 +238,6 @@ def main():
             optimizer_g.step()
             optimizer_f.step()
 
-            loss_comb_list.append(loss_comb)
-            loss_s_list.append(loss_s)
-            loss_u_list.append(loss_u)
-            loss_t_list.append(loss_t)
 
             if step % args.val_interval == 0 and step > 0:
                 loss_val, acc_val = test(target_val_labeled_loader)
@@ -287,9 +279,9 @@ def main():
                 plot_loss(args.val_interval, args.net, loss_val_list)
                 G.train()
                 F1.train()
-
+                del loss_comb,loss_u,loss_t,loss_s
                 if args.save_check:
-                    if step % args.save_interval == 0 and step > 0:
+                    if step % args.save_interval == 0 and step > 250:
                         print('=> saving model')
                         if not os.path.exists(args.save_model_path):
                             os.makedirs(args.save_model_path)
@@ -310,7 +302,7 @@ def main():
     target_labeled_len = len(target_labeled_loader)
 
     start_meta_step = 0
-
+    best_acc = 0.0
     if args.finish == 'T':
         for step in range(start_meta_step, args.meta_train_steps):
             # --------------------------------------------------------------------------------------------------
@@ -360,7 +352,7 @@ def main():
             if step % target_unlabeled_len == 0:
                 target_unlabeled_iter = iter(target_unlabeled_loader)
             if step % target_labeled_len == 0:
-                target_labeled_iter = iter(target_labeled_iter)
+                target_labeled_iter = iter(target_labeled_loader)
             source_labeled = next(source_labeled_iter)
             target_unlabeled = next(target_unlabeled_iter)
             target_labeled = next(target_labeled_iter)
@@ -462,7 +454,7 @@ def main():
                         loss_target_new)
             print(log_train)
 
-            best_acc = 0.0
+
             if step % args.save_interval == 0 and step > 0:
                 loss_val, acc_val = test(target_val_labeled_loader)
                 G.train()

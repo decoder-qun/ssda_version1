@@ -113,7 +113,7 @@ def return_dataset(args):
         bs = 24
 
     if torch.cuda.is_available():
-        nw = 2
+        nw = 12
     else:
         nw = 0
     data_transforms = {
@@ -170,9 +170,9 @@ def return_dataset(args):
     target_val_labeled_dataset=Imagelists_VISDA(target_val_filepath,transform=data_transforms['val'])
     target_test_unlabeled_dataset=Imagelists_VISDA(target_unlabeled_filepath,transform=data_transforms['test'])
     # print(len(target_labeled_dataset),len(target_unlabeled_dataset),len(target_val_labeled_dataset))
-    source_labeled_loader=torch.utils.data.DataLoader(source_labeled_dataset,batch_size=bs,num_workers=nw,drop_last=True,shuffle=True)
-    target_labeled_loader=torch.utils.data.DataLoader(target_labeled_dataset,batch_size=bs,num_workers=nw,drop_last=True,shuffle=True)
-    target_unlabeled_loader=torch.utils.data.DataLoader(target_unlabeled_dataset,batch_size=bs,num_workers=nw,drop_last=True,shuffle=True)
+    source_labeled_loader=torch.utils.data.DataLoader(source_labeled_dataset,batch_size=100,num_workers=nw,drop_last=True,shuffle=True)
+    target_labeled_loader=torch.utils.data.DataLoader(target_labeled_dataset,batch_size=60,num_workers=nw,drop_last=True,shuffle=True)
+    target_unlabeled_loader=torch.utils.data.DataLoader(target_unlabeled_dataset,batch_size=100,num_workers=nw,drop_last=True,shuffle=True)
     target_val_labeled_loader=torch.utils.data.DataLoader(target_val_labeled_dataset,batch_size=bs,num_workers=nw,drop_last=True,shuffle=True)
     target_test_unlabeled_loader=torch.utils.data.DataLoader(target_test_unlabeled_dataset,batch_size=bs,num_workers=nw,drop_last=True,shuffle=True)
 

@@ -1,8 +1,3 @@
-#make alex and vgg run on colab at the same time,
-# add more record detail.I set patience at 30,
-# save pic every 1000 epoch, save model every 1000 epoch,
-# do validate every 10 epoch and save this record in the file.
-
 import torch
 import torch.nn as nn
 import argparse
@@ -14,7 +9,7 @@ from torch.autograd import Variable
 from return_dataset import return_dataset
 from model.basenet import VGGBase, AlexNetBase
 # from model.resnet_meta import resnet34, ResNet32, resnet32, Predictor_meta, Predictor_deep_meta
-from model.resnet import resnet34, Predictor, Predictor_deep
+from model.resnet import resnet18, resnet34, resnet50, resnet101, resnet152, Predictor, Predictor_deep
 from loss import adentropy
 from utils import weights_init, inv_lr_scheduler, to_var, plot_acc_loss, plot_acc, plot_loss
 import time
@@ -25,61 +20,68 @@ parser = argparse.ArgumentParser(description='meta-uda')
 # TODO
 parser.add_argument('--finish', type=str, default='F', choices=['T', 'F'], help='source part has trained or not')
 parser.add_argument('--net', default='alexnet', help='which network to use as backbone')
-# TODO
 parser.add_argument('--resume', action='store_true', help='resume from checkpoint',
                     default=True)
-parser.add_argument('--save_interval', type=int, default=100, metavar='N',
+parser.add_argument('--patience', type=int, default=10, metavar='S',
+                    help='early stopping to wait for improvement before terminating')
+parser.add_argument('--save_interval', type=int, default=1000, metavar='N',
                     help='how many batches to wait before logging')
-parser.add_argument('--val_interval', type=int, default=10, metavar='N',
+parser.add_argument('--val_interval', type=int, default=100, metavar='N',
                     help='how many batches to wait before logging')
+parser.add_argument('--lr', type=float, default=0.01, metavar='LR', help='learning rate')
+parser.add_argument('--save_path', type=str, default='./save_results/exp3',
+                    help='dir to save model')
+parser.add_argument('--source', default='real', help='source dataset')
+parser.add_argument('--target', default='sketch', help='target dataset')
+
+
 parser.add_argument('--meta_resume', action='store_true', help='meta resume from checkpoint',
                     default=True)
 parser.add_argument('--multi', type=float, default=0.1, metavar='MLT', help='learning rate multiplication')
-# TODO
 parser.add_argument('--train_steps', type=int, default=50000, help='how many steps in train stage')
 parser.add_argument('--meta_train_steps', type=int, default=20000, help='how many steps in meta train stage')
 parser.add_argument('--dataset', type=str, default='multi', choices=['multi', 'office', 'office_home'],
                     help='the name of dataset')
-parser.add_argument('-source', default='real', help='source dataset')
-parser.add_argument('--target', default='sketch', help='target dataset')
+parser.add_argument('--num', type=int, default=3, help='number of labeled examples in the target')
 parser.add_argument('--threshold', type=float, default=0.95, help='loss weight')
 parser.add_argument('--beta', type=float, default=1.0, help='loss weight')
-parser.add_argument('--lr', type=float, default=0.01, metavar='LR', help='learning rate')
 parser.add_argument('--save_check', action='store_true', default=True, help='save checkpoint or not')
 parser.add_argument('--lamda', type=float, default=0.1, metavar='LAM',
                     help='value of lamda used in entropy and adentropy')
-parser.add_argument('--patience', type=int, default=20, metavar='S',
-                    help='early stopping to wait for improvement before terminating')
 parser.add_argument('--early', action='store_false', default=True, help='early stopping on validation or not')
 parser.add_argument('--method', type=str, default='MME', choices=['S+T', 'ENT', 'MME'],
                     help='MME is proposed method, ENT is entropy minimization, S+T is training only on labeled examples')
-parser.add_argument('--num', type=int, default=3,
-                    help='number of labeled examples in the target')
+parser.add_argument('--log_file', type=str, default='./temp.log', help='dir to save checkpoint')
 
 args = parser.parse_args(args=[])
-print('Dataset:%s\tSource:%s\tTarget:%s\tNetwork:%s\t' % (
-args.dataset, args.source, args.target, args.net))
-record_dir = 'record/%s/%s/%s' % (args.dataset, args.method, args.net)
+print('Dataset:%s\tSource:%s\tTarget:%s\tLabeled num perclass:%s\tNetwork:%s\t' % (
+args.dataset, args.source, args.target, args.num, args.net))
+record_dir = os.path.join(args.save_path,'%s_%s_%s' % (args.dataset, args.method, args.net))
+pic_path=os.path.join(args.save_path,"pic")
 if not os.path.exists(record_dir):
     os.makedirs(record_dir)
 t = time.localtime()
-record_file = os.path.join(record_dir, '%s_to_%s_time_%d_%d_%d' % (
+record_train_file = os.path.join(record_dir, '%s_to_%s_time_%d_%d_%d' % (
 args.source, args.target, t.tm_mon, t.tm_mday, t.tm_hour))
-
-
+record_val_file = os.path.join(record_dir, '%s_to_%s_time_%d_%d_%d' % (
+args.source, args.target, t.tm_mon, t.tm_mday, t.tm_hour))
 source_labeled_loader, target_labeled_loader, target_unlabeled_loader, target_val_labeled_loader, target_test_unlabeled_loader, num_per_cls_list = return_dataset(
     args)
 # print(num_per_cls_list)
 
 # effective weights: https://openaccess.thecvf.com/content_CVPR_2019/papers/Cui_Class-Balanced_Loss_Based_on_Effective_Number_of_Samples_CVPR_2019_paper.pdf
-counter=0
 beta = 0.9999
 effective_num = 1.0 - np.power(beta, num_per_cls_list)
 per_cls_weights = (1.0 - beta) / np.array(effective_num)  # 1-ß/1-ß^n
 per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(num_per_cls_list)  # normalization
 per_cls_weights = torch.FloatTensor(per_cls_weights)
 
-
+acc_list = []
+train_acc_list=[]
+loss_val_list = []
+loss_t_list=[]
+loss_u_list=[]
+loss_s_list=[]
 
 def G_F1(args):
     if args.net == 'alexnet':
@@ -88,6 +90,18 @@ def G_F1(args):
     elif args.net == 'resnet34':
         G = resnet34()
         inc = 512
+    elif args.net == 'resnet18':
+        G = resnet18()
+        inc = 512        
+    elif args.net == 'resnet50':
+        G = resnet50()
+        inc = 2048
+    elif args.net == 'resnet101':
+        G = resnet101()
+        inc = 2048
+    elif args.net == 'resnet152':
+        G = resnet152()
+        inc = 2048
     elif args.net == 'vgg':
         G = VGGBase()
         inc = 4096
@@ -138,12 +152,6 @@ target_labeled_label = Variable(target_labeled_label)
 val_image = Variable(val_image)
 val_label = Variable(val_label)
 
-acc_list = []
-loss_comb_list = []
-loss_s_list = []
-loss_u_list = []
-loss_t_list = []
-loss_val_list = []
 
 
 def main():
@@ -190,9 +198,18 @@ def main():
     # start_step=args.train_steps+1
     if args.finish == 'F':
         for step in range(start_step, args.train_steps):
+            # if step>3000:
+            #     optimizer_g = inv_lr_scheduler(param_lr_g, optimizer_g, step, init_lr=0.001)
+            #     optimizer_f = inv_lr_scheduler(param_lr_f, optimizer_f, step, init_lr=0.001)
+            #     lr = optimizer_f.param_groups[0]['lr']
+            # elif step>5000:
+            #     optimizer_g = inv_lr_scheduler(param_lr_g, optimizer_g, step, init_lr=0.0001)
+            #     optimizer_f = inv_lr_scheduler(param_lr_f, optimizer_f, step, init_lr=0.0001)
+            #     lr = optimizer_f.param_groups[0]['lr']   
+            # else:
             optimizer_g = inv_lr_scheduler(param_lr_g, optimizer_g, step, init_lr=args.lr)
             optimizer_f = inv_lr_scheduler(param_lr_f, optimizer_f, step, init_lr=args.lr)
-            lr = optimizer_f.param_groups[0]['lr']
+            lr = optimizer_f.param_groups[0]['lr']                
 
             # source dataset & target dataset
             # if all the source data has been iterated
@@ -243,13 +260,35 @@ def main():
             unlabeled_feature = G(target_unlabeled_image)
             loss_t = adentropy(F1, unlabeled_feature, args.lamda)
             loss_t.backward()
-            optimizer_g.step()
             optimizer_f.step()
+            optimizer_g.step()
 
-            loss_comb_list.append(loss_comb)
-            loss_s_list.append(loss_s)
-            loss_u_list.append(loss_u)
-            loss_t_list.append(loss_t)
+            zero_grad_all()
+
+
+            if step % args.val_interval == 0 and step > 0:
+                correct=0
+                for i in range(ns):
+                    probs,pos=torch.max(predict[i], dim=-1)
+                    if(pos==label[i]):
+                        correct+=1
+
+                train_acc=100.0*float(correct)/float(ns)
+                train_acc_list.append(train_acc)
+                loss_u_list.append(loss_u)
+                loss_t_list.append(loss_t)
+                loss_s_list.append(loss_s)
+                log_train = 'Ep:{} lr:{} train_acc:{:.6f}% train:{}/{} loss_comb:{:.6f} loss_s:{:.6f} loss_u:{:.6f} loss_t:{:.6f}' \
+                    .format(step, lr, train_acc, correct, ns, loss_comb, loss_s, loss_u, -loss_t)
+                print(log_train)
+                
+
+                plot_acc(pic_path,args.val_interval,train_acc_list,"S train")
+                plot_loss(pic_path,args.val_interval,loss_s_list,"S train")
+                plot_loss(pic_path,args.val_interval,loss_u_list,"U train")
+                plot_loss(pic_path,args.val_interval,loss_t_list,"MME train")
+                with open(record_train_file,'a') as f:
+                    f.write(log_train+'\n')
 
             if step % args.val_interval == 0 and step > 0:
                 loss_val, acc_val = test(target_val_labeled_loader)
@@ -267,38 +306,38 @@ def main():
                 if args.early:
                     if counter > args.patience:
                         print('=> saving model')
-                        model_path = "save_model/{}".format(args.method)
+                        model_path=os.path.join(args.save_path,"save_model")
                         if not os.path.exists(model_path):
                             os.makedirs(model_path)
-                        filename = "save_model/{}/{}_to_{}_step_{}_{}_final.pth".format(args.method, args.source,
-                                                                                      args.target, step, args.net)
+                        filename = os.path.join(model_path, "{}_{}_to_{}_step_{}_{}_final.pth".
+                                                format(args.log_file, args.source, args.target, step, args.net))
                         state = {'step': step + 1,
                                  'state_dict_G': G.state_dict(), 'optimizer_g': optimizer_g.state_dict(),
                                  'state_dict_F': F1.state_dict(), 'optimizer_f': optimizer_f.state_dict(),
                                  'best_acc': best_acc}
                         torch.save(state, filename)
                         break;
-                log_train = 'Ep:{} lr:{} loss_comb:{:.6f} loss_s:{:.6f} loss_u:{:.6f} loss_t:{:.6f} ' \
-                    .format(step, lr, loss_comb, loss_s, loss_u, -loss_t)
-                print(log_train)
+
                 log_val = 'Best_acc:{} Curr_acc:{} Curr_loss:{}\n'.format(best_acc, acc_val, loss_val)
                 print(log_val)
-                with open(record_file, 'a') as f:
-                    f.write(log_train+log_val)
+                with open(record_val_file, 'a') as f:
+                    f.write(log_val)
 
-                plot_acc_loss(args.val_interval,args.net,loss_val_list,acc_list)
-                plot_acc(args.val_interval, args.net, acc_list)
-                plot_loss(args.val_interval,args.net,loss_val_list)
+                if step>0 and step%1==0:
+                    plot_acc_loss(pic_path,args.val_interval, args.net, loss_val_list, acc_list)
+                    plot_acc(pic_path, args.val_interval, acc_list,"target val")
+                    plot_loss(pic_path, args.val_interval, loss_val_list,"target val")
                 G.train()
                 F1.train()
 
                 if args.save_check:
-                    if step % args.save_interval == 0 and step > 0:
+                    if step % args.save_interval == 0 and step > 10:
                         print('=> saving model')
-                        model_path="save_model/{}".format(args.method)
+                        model_path=os.path.join(args.save_path,"save_model")
                         if not os.path.exists(model_path):
                             os.makedirs(model_path)
-                        filename = "save_model/{}/{}_to_{}_step_{}_{}.pth".format(args.method,args.source, args.target, step, args.net)
+                        filename = os.path.join(model_path, "{}_{}_to_{}_step_{}_{}.pth".
+                                                format(args.log_file, args.source, args.target, step, args.net))
                         state = {'step': step + 1,
                                  'state_dict_G': G.state_dict(), 'optimizer_g': optimizer_g.state_dict(),
                                  'state_dict_F': F1.state_dict(), 'optimizer_f': optimizer_f.state_dict(),
@@ -314,7 +353,7 @@ def main():
     target_labeled_len = len(target_labeled_loader)
 
     start_meta_step = 0
-
+    best_acc = 0.0
     if args.finish == 'T':
         for step in range(start_meta_step, args.meta_train_steps):
             # --------------------------------------------------------------------------------------------------
@@ -343,8 +382,7 @@ def main():
                         meta_params += [{'params': [value], 'lr': args.multi,
                                          'weight_decay': 0.0005}]
                     else:
-                        print("classifier not in key!")
-                        meta_params += [{'params': [value], 'lr': args.multi * 10,
+                        meta_params += [{'params': [value], 'lr': args.multi*10,
                                          'weight_decay': 0.0005}]
 
             optimizer_g_meta = optim.SGD(meta_params, momentum=0.9, weight_decay=0.0005, nesterov=True)
@@ -364,7 +402,7 @@ def main():
             if step % target_unlabeled_len == 0:
                 target_unlabeled_iter = iter(target_unlabeled_loader)
             if step % target_labeled_len == 0:
-                target_labeled_iter = iter(target_labeled_iter)
+                target_labeled_iter = iter(target_labeled_loader)
             source_labeled = next(source_labeled_iter)
             target_unlabeled = next(target_unlabeled_iter)
             target_labeled = next(target_labeled_iter)
@@ -394,6 +432,7 @@ def main():
             eps = torch.zeros(weights.size())
             weights = to_var(weights)
             eps = to_var(eps)
+
             w = weights + eps  # 32*1
 
             loss_s = F.cross_entropy(predict[:ns], label, reduce=False)
@@ -410,6 +449,7 @@ def main():
             optimizer_f_meta.step()
             optimizer_g_meta.zero_grad()
             optimizer_f_meta.zero_grad()
+
             # grads = eps.grad.data
             # print(grads)
             # grads = torch.autograd.grad(loss_comb_sum, (meta_G.params()), only_inputs=True, create_graph=True, allow_unused=True)
@@ -461,8 +501,24 @@ def main():
             optimizer_f.step()
             zero_grad_all()
 
-            if step % args.save_interval == 0 and step > 0:
+            nt=target_labeled_image.size(0)
+            correct=0
+            for i in range(nt):
+                probs,pos=torch.max(predict[i], dim=-1)
+                if(pos==label[i]):
+                    correct+=1
+            train_acc=100.0*float(correct)/float(nt)
+            train_acc_list.append(train_acc)
+            
+            
+            if step % args.val_interval == 0 and step > 0:
                 loss_val, acc_val = test(target_val_labeled_loader)
+                acc_list.append(acc_val)
+                loss_val_list.append(loss_target_new)
+                # if step>0 and step%10==0:
+                #     plot_acc_loss(args.val_interval, args.net, loss_val_list, acc_list)
+                #     plot_acc(args.val_interval, args.net, acc_list)
+                #     plot_loss(args.val_interval, args.net, loss_val_list)
                 G.train()
                 F1.train()
                 if acc_val >= best_acc:
@@ -472,42 +528,36 @@ def main():
                     counter += 1
                 if args.early:
                     if counter > args.patience:
-                        print('=> saving meta model')
-                        model_path = "save_meta_model/{}".format(args.method)
-                        if not os.path.exists(model_path):
-                            os.makedirs(model_path)
-                        filename = "save_meta_model/{}/{}_to_{}_step_{}_{}_final.pth".format(args.method, args.source,
-                                                                                           args.target,
-                                                                                           step, args.net)
-                        state = {'step': step + 1,
-                                 'state_dict_G': G.state_dict(), 'optimizer_g': optimizer_g.state_dict(),
-                                 'state_dict_F': F1.state_dict(), 'optimizer_f': optimizer_f.state_dict(),
-                                 'best_acc': best_acc}
-                        torch.save(state, filename)
                         break;
-
-                log_train = 'Meta_Ep:{} lr:{} loss_comb:{:.6f} loss_s:{:.6f} loss_u:{:.6f} loss_t:{:.6f} ' \
-                    .format(step, lr, loss_comb, loss_s, loss_u, -loss_t)
+                
+                print('record %s' % record_train_file)
+                log_train = 'MetaEp:{} lr:{} lr_meta:{} train_acc:{:.6f} train:{}/{} loss_comb:{:.6f} loss_s:{:.6f} loss_u:{:.6f} loss_t:{:.6f} loss_target:{:.6f} loss_target_new:{:.6f}\n' \
+                .format(step, lr, lr_meta, train_acc, correct, ns, loss_comb_mean, loss_s.mean(), loss_u.mean(), -loss_t, loss_target,
+                        loss_target_new)
                 print(log_train)
+                with open(record_train_file, 'a') as f:
+                    f.write(log_train)
                 log_val = 'Best_acc:{} Curr_acc:{} Curr_loss:{}\n'.format(best_acc, acc_val, loss_val)
                 print(log_val)
-                with open(record_file, 'a') as f:
-                    f.write(log_train + log_val)
+                with open(record_val_file, 'a') as f:
+                    f.write(log_val)
+
+
             G.train()
             F1.train()
 
             if args.save_check:
-                if step % args.save_interval == 0 and step > 0:
-                    print('=> saving meta model')
-                    model_path = "save_meta_model/{}".format(args.method)
+                if step % args.save_interval == 0 and step > 10:
+                    print('=> saving model')
+                    model_path=os.path.join(args.save_path,"save_model")
                     if not os.path.exists(model_path):
                         os.makedirs(model_path)
-                    filename = "save_meta_model/{}/{}_to_{}_step_{}_{}.pth".format(args.method, args.source, args.target,
-                                                                                  step, args.net)
+                    filename = os.path.join(model_path, "{}_{}_to_{}_step_{}_{}.pth".
+                                            format(args.log_file, args.source, args.target, step, args.net))
                     state = {'step': step + 1,
-                             'state_dict_G': G.state_dict(), 'optimizer_g': optimizer_g.state_dict(),
-                             'state_dict_F': F1.state_dict(), 'optimizer_f': optimizer_f.state_dict(),
-                             'best_acc':best_acc}
+                              'state_dict_G': G.state_dict(), 'optimizer_g': optimizer_g.state_dict(),
+                              'state_dict_F': F1.state_dict(), 'optimizer_f': optimizer_f.state_dict(),
+                              'best_acc': best_acc}
                     torch.save(state, filename)
 
 
